@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"log"
-	"os"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -11,45 +10,57 @@ import (
 )
 
 func main() {
-	// Define MQTT client options
 	opts := mqtt.NewClientOptions().
-		AddBroker("tcp://raspberrypi:1883"). 
+		AddBroker("tcp://raspberrypi:1883").
 		SetClientID("zigbee2mqtt-client").
 		SetCleanSession(true)
 
-	// Create Paho MQTT client
-	rawClient := mqtt.NewClient(opts)
+	client := mqtt.NewClient(opts)
 
-	// Connect to the broker
-	if token := rawClient.Connect(); token.Wait() && token.Error() != nil {
-		log.Fatalf("Failed to connect to MQTT broker: %v", token.Error())
+	if token := client.Connect(); token.Wait() && token.Error() != nil {
+		log.Fatalf("Failed to connect: %v", token.Error())
 	}
 
-	// Wrap the Paho client in RealMQTTClient
-	client := zigbee2mqtt.NewPahoClient(rawClient)
-
-	// Create Zigbee2MQTT instance with a 5-second timeout
-	z2m, err := zigbee2mqtt.NewZigbee2MQTT(client, 5*time.Second)
+	z2m, err := zigbee2mqtt.NewZigbee2MQTT(zigbee2mqtt.NewPahoClient(client), 5*time.Second)
 	if err != nil {
 		log.Fatalf("Failed to initialize Zigbee2MQTT: %v", err)
 	}
 
-	// Periodically check the state
-	for {
-		state, err := z2m.State()
-		if err != nil {
-			if err == zigbee2mqtt.ErrStateTimeout {
-				fmt.Println("Timeout occurred. Using cached state:", state)
-			} else {
-				log.Fatalf("Error retrieving state: %v", err)
-			}
-		} else {
-			fmt.Println("State received:", state)
-			if state {
-				os.Exit(0)
-			}
-		}
-
-		time.Sleep(1 * time.Second) // Poll every second
+	// Register StateHandler
+	stateHandler := zigbee2mqtt.NewStateHandler(5 * time.Second)
+	if err := z2m.RegisterHandler(stateHandler); err != nil {
+		log.Fatalf("Failed to register state handler: %v", err)
 	}
+
+	// Register LogHandler
+	logHandler := zigbee2mqtt.NewLogHandler()
+	if err := z2m.RegisterHandler(logHandler); err != nil {
+		log.Fatalf("Failed to register log handler: %v", err)
+	}
+
+	// Poll for state updates
+	go func() {
+		for {
+			state, err := stateHandler.GetState()
+			if err != nil {
+				fmt.Println("State timeout. Cached state:", state)
+			} else {
+				fmt.Println("State update:", state)
+			}
+			time.Sleep(2 * time.Second)
+		}
+	}()
+
+	// Poll for logs
+	go func() {
+		for {
+			logs := logHandler.GetLogs()
+			for _, logMsg := range logs {
+				fmt.Println("Log message:", logMsg)
+			}
+			time.Sleep(2 * time.Second)
+		}
+	}()
+
+	select {} // Keep the program running
 }
